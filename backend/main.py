@@ -1,10 +1,12 @@
 import base64
 import json
 import os
+from datetime import date
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, DefaultDict
 import csv
 import requests
+from collections import defaultdict
 
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,7 +21,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-CSV_PATH = Path(__file__).parent / "DEV_DICIEMBRE_2025.csv"
+DATA_DIR = Path(__file__).parent
+
+# Added tipo y fecha para clasificar original/devolución y particionar por día.
 HEADERS = [
     "TICKET DEVOLUCION",
     "TICKET FACTURA",
@@ -30,6 +34,8 @@ HEADERS = [
     "MEDIO DE PAGO",
     "MOTIVO",
     "COMENTARIO",
+    "TIPO",
+    "FECHA",
 ]
 COLUMN_KEYS = [
     "ticket_devolucion",
@@ -41,6 +47,8 @@ COLUMN_KEYS = [
     "medio_pago",
     "motivo",
     "comentario",
+    "tipo_documento",
+    "fecha_operacion",
 ]
 
 
@@ -52,7 +60,11 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 
 def _mock_result() -> Dict[str, Any]:
-    return {key: "" for key in COLUMN_KEYS}
+    return {
+        **{key: "" for key in COLUMN_KEYS},
+        "tipo_documento": "devolucion",
+        "fecha_operacion": date.today().isoformat(),
+    }
 
 
 def extract_data_from_image_bytes(image_bytes: bytes, filename: str) -> Dict[str, Any]:
@@ -114,10 +126,16 @@ def extract_data_from_image_bytes(image_bytes: bytes, filename: str) -> Dict[str
         return _mock_result()
 
 
-def read_rows() -> List[List[str]]:
-    if not CSV_PATH.exists():
+def get_csv_path(fecha: str) -> Path:
+    # Remove dashes to keep filename compact; default when missing fecha
+    slug = fecha.replace("-", "") if fecha else "SIN_FECHA"
+    return DATA_DIR / f"DEV_{slug}.csv"
+
+
+def read_rows(path: Path) -> List[List[str]]:
+    if not path.exists():
         return []
-    with CSV_PATH.open("r", newline="", encoding="utf-8") as f:
+    with path.open("r", newline="", encoding="utf-8") as f:
         return list(csv.reader(f))
 
 
@@ -152,20 +170,31 @@ def find_total_dev_index(rows: List[List[str]]) -> int:
     return -1
 
 
-def write_rows(rows: List[List[str]]) -> None:
-    with CSV_PATH.open("w", newline="", encoding="utf-8") as f:
+def write_rows(path: Path, rows: List[List[str]]) -> None:
+    with path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerows(rows)
 
 
 def append_entries(entries: List[Dict[str, Any]]):
-    rows = ensure_structure(read_rows())
-    total_idx = find_total_dev_index(rows)
-    insert_at = total_idx if total_idx != -1 else len(rows)
+    grouped: DefaultDict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for entry in entries:
+        fecha = str(entry.get("fecha_operacion", "")).strip()
+        grouped[fecha].append(entry)
 
-    data_rows = [[str(entry.get(key, "")) for key in COLUMN_KEYS] for entry in entries]
-    rows[insert_at:insert_at] = data_rows
-    write_rows(rows)
+    saved_files = []
+    for fecha, items in grouped.items():
+        csv_path = get_csv_path(fecha)
+        rows = ensure_structure(read_rows(csv_path))
+        total_idx = find_total_dev_index(rows)
+        insert_at = total_idx if total_idx != -1 else len(rows)
+
+        data_rows = [[str(entry.get(key, "")) for key in COLUMN_KEYS] for entry in items]
+        rows[insert_at:insert_at] = data_rows
+        write_rows(csv_path, rows)
+        saved_files.append(csv_path.name)
+
+    return saved_files
 
 
 @app.post("/upload")
@@ -179,5 +208,5 @@ async def upload(files: List[UploadFile] = File(...)):
 
 @app.post("/save")
 async def save(payload: EntriesPayload):
-    append_entries(payload.entries)
-    return {"status": "guardado", "file": str(CSV_PATH.name)}
+    files = append_entries(payload.entries)
+    return {"status": "guardado", "files": files}

@@ -10,9 +10,18 @@ const columns = [
   { key: 'medio_pago', label: 'MEDIO DE PAGO' },
   { key: 'motivo', label: 'MOTIVO' },
   { key: 'comentario', label: 'COMENTARIO' },
+  { key: 'tipo_documento', label: 'TIPO' },
+  { key: 'fecha_operacion', label: 'FECHA' },
 ]
 
-const initialRow = columns.reduce((acc, col) => ({ ...acc, [col.key]: '' }), {})
+const createInitialRow = () =>
+  columns.reduce(
+    (acc, col) => ({
+      ...acc,
+      [col.key]: col.key === 'tipo_documento' ? 'devolucion' : col.key === 'fecha_operacion' ? new Date().toISOString().slice(0, 10) : '',
+    }),
+    {},
+  )
 
 function App() {
   const [rows, setRows] = useState([])
@@ -52,8 +61,12 @@ function App() {
       if (!response.ok) throw new Error('Error al procesar archivos')
       const data = await response.json()
       const incoming = Array.isArray(data?.results) ? data.results : []
-      setRows(incoming.length ? incoming : [initialRow])
-      setStatus('Datos cargados (mock) listos para revisión')
+      const normalized = (incoming.length ? incoming : [createInitialRow()]).map((row) => ({
+        ...createInitialRow(),
+        ...row,
+      }))
+      setRows(normalized)
+      setStatus('Datos cargados listos para revisión')
     } catch (err) {
       setError(err.message || 'Error al subir archivos')
     } finally {
@@ -76,7 +89,7 @@ function App() {
     })
   }
 
-  const addEmptyRow = () => setRows((prev) => [...prev, { ...initialRow }])
+  const addEmptyRow = () => setRows((prev) => [...prev, { ...createInitialRow() }])
 
   const handleSave = async () => {
     if (!rows.length) return
@@ -90,7 +103,13 @@ function App() {
         body: JSON.stringify({ entries: rows }),
       })
       if (!response.ok) throw new Error('Error al guardar CSV')
-      setStatus('Registros guardados en DEV_DICIEMBRE_2025.csv')
+      const res = await response.json()
+      const files = Array.isArray(res?.files) ? res.files : []
+      setStatus(
+        files.length
+          ? `Registros guardados en: ${files.join(', ')}`
+          : 'Registros guardados'
+      )
     } catch (err) {
       setError(err.message || 'Error al guardar')
     } finally {
@@ -199,12 +218,30 @@ function App() {
                     >
                       {columns.map((col) => (
                         <td key={col.key} className="px-4 py-2">
-                          <input
-                            type="text"
-                            value={row[col.key] ?? ''}
-                            onChange={(e) => handleChange(idx, col.key, e.target.value)}
-                            className="w-full rounded-md border border-slate-200 px-2 py-2 text-sm focus:border-indigo-500 focus:outline-none"
-                          />
+                          {col.key === 'tipo_documento' ? (
+                            <select
+                              value={row[col.key] ?? 'devolucion'}
+                              onChange={(e) => handleChange(idx, col.key, e.target.value)}
+                              className="w-full rounded-md border border-slate-200 px-2 py-2 text-sm focus:border-indigo-500 focus:outline-none"
+                            >
+                              <option value="devolucion">Devolución</option>
+                              <option value="original">Original</option>
+                            </select>
+                          ) : col.key === 'fecha_operacion' ? (
+                            <input
+                              type="date"
+                              value={row[col.key] ?? ''}
+                              onChange={(e) => handleChange(idx, col.key, e.target.value)}
+                              className="w-full rounded-md border border-slate-200 px-2 py-2 text-sm focus:border-indigo-500 focus:outline-none"
+                            />
+                          ) : (
+                            <input
+                              type="text"
+                              value={row[col.key] ?? ''}
+                              onChange={(e) => handleChange(idx, col.key, e.target.value)}
+                              className="w-full rounded-md border border-slate-200 px-2 py-2 text-sm focus:border-indigo-500 focus:outline-none"
+                            />
+                          )}
                         </td>
                       ))}
                     </tr>

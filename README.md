@@ -1,10 +1,10 @@
 # Recuento diario de facturas
 
-Aplicación web para subir facturas (imágenes/PDF), revisar los campos extraídos y guardarlos en `DEV_DICIEMBRE_2025.csv` con el formato solicitado.
+Aplicación web para subir facturas (imágenes/PDF), revisar los campos extraídos y guardarlos en CSVs por día (`DEV_<YYYYMMDD>.csv`) con el formato solicitado.
 
 ## Estructura
 - `frontend/`: React + Vite + Tailwind (dropzone, tabla editable, confirmación de guardado).
-- `backend/`: FastAPI con endpoints `/upload` (mock) y `/save` (append CSV).
+- `backend/`: FastAPI con endpoints `/upload` (mock/Groq) y `/save` (agrupa por fecha y guarda en CSV por día).
 
 ## Ejecutar el backend
 1. Activar el entorno (ya configurado en `.venv`).
@@ -25,7 +25,7 @@ Aplicación web para subir facturas (imágenes/PDF), revisar los campos extraíd
    cd frontend
    npm install
    ```
-2. (Opcional) definir la URL del backend: crear `.env` con `VITE_API_BASE=http://localhost:8000`.
+2. (Recomendado) define la URL del backend: copia `.env.example` a `.env` y ajusta `VITE_API_BASE` (p. ej. `http://localhost:8000`).
 3. Levantar en desarrollo:
    ```bash
    npm run dev
@@ -38,12 +38,13 @@ Aplicación web para subir facturas (imágenes/PDF), revisar los campos extraíd
 ## Uso
 1. En la UI, arrastra/selecciona múltiples imágenes o PDFs.
 2. El backend devuelve datos mock (`extract_data_from_image`), que se muestran en la tabla editable.
-3. Ajusta los campos: TICKET DEVOLUCION, TICKET FACTURA, CAJA, TIENDA, VENDEDOR, MONTO DEVUELTO, MEDIO DE PAGO, MOTIVO, COMENTARIO.
-4. Pulsa **Confirmar y Guardar** para enviar `/save` y anexar al CSV.
+3. Ajusta los campos: TICKET DEVOLUCION, TICKET FACTURA, CAJA, TIENDA, VENDEDOR, MONTO DEVUELTO, MEDIO DE PAGO, MOTIVO, COMENTARIO, TIPO (original/devolución) y FECHA.
+4. Pulsa **Confirmar y Guardar** para enviar `/save`; se crean/actualizan archivos `DEV_<fecha>.csv` por cada día encontrado.
 
-## Formato del CSV
+## Formato del CSV (por día)
+- Nombre: `DEV_<YYYYMMDD>.csv` (si no hay fecha, `DEV_SIN_FECHA.csv`).
 - Fila 7: `TIENDA CANAL DIGITAL T-45-63`.
-- Fila 10: encabezados con los campos anteriores.
+- Fila 10: encabezados con los campos anteriores (incluye TIPO y FECHA).
 - Las nuevas filas se insertan después de la última fila con datos y antes de cualquier fila que comience con `TOTAL DEV`.
 
 ## Mock de extracción
