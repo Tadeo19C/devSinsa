@@ -82,7 +82,7 @@ function App() {
     setStatus('')
     setError('')
     try {
-      const response = await fetch(`${apiBase}/report/monthly?year=${year}&month=${month}`, {
+      const response = await fetch(`${apiBase}/report/monthly/pdf?year=${year}&month=${month}`, {
         method: 'GET',
       })
       if (!response.ok) throw new Error('Error al generar reporte')
@@ -91,7 +91,7 @@ function App() {
       const url = window.URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
-      a.download = `reporte_${year}_${String(month).padStart(2, '0')}.xlsx`
+      a.download = `reporte_${year}_${String(month).padStart(2, '0')}.pdf`
       document.body.appendChild(a)
       a.click()
       a.remove()
@@ -249,13 +249,13 @@ function App() {
           <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 dark:border-slate-700/80">
             <div>
               <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">Baseline Excel</h2>
-              <p className="text-sm text-slate-600 dark:text-slate-300">Sube tu archivo base (.xlsx/.xls) para guiar el esquema.</p>
+              <p className="text-sm text-slate-600 dark:text-slate-300">Sube tu archivo base (.xlsx/.xls) o plantilla PDF para guiar el esquema.</p>
             </div>
             <label className="inline-flex items-center justify-center rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow hover:bg-indigo-500 cursor-pointer">
-              Subir Excel
+              Subir baseline
               <input
                 type="file"
-                accept=".xlsx,.xls"
+                accept=".xlsx,.xls,.pdf"
                 className="hidden"
                 onChange={(e) => {
                   const file = e.target.files?.[0]
@@ -274,7 +274,7 @@ function App() {
           <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 dark:border-slate-700/80">
             <div>
               <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">Reporte mensual</h2>
-              <p className="text-sm text-slate-600 dark:text-slate-300">Genera un Excel con resumen y detalle del mes.</p>
+              <p className="text-sm text-slate-600 dark:text-slate-300">Genera un PDF similar al reporte mensual.</p>
             </div>
             <div className="flex items-center gap-2">
               <input

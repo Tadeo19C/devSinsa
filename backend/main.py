@@ -2,7 +2,9 @@ import base64
 import io
 import json
 import os
+import re
 from datetime import date
+from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Any, DefaultDict
 import csv
@@ -11,6 +13,12 @@ from collections import defaultdict
 
 from fastapi.responses import StreamingResponse
 from openpyxl import Workbook, load_workbook
+
+from reportlab.lib.pagesizes import letter
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import inch
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, ListFlowable, ListItem
 
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
@@ -27,7 +35,8 @@ app.add_middleware(
 )
 
 DATA_DIR = Path(__file__).parent
-BASELINE_PATH = DATA_DIR / "baseline.xlsx"
+BASELINE_XLSX_PATH = DATA_DIR / "baseline.xlsx"
+BASELINE_PDF_PATH = DATA_DIR / "baseline.pdf"
 REPORTS_DIR = DATA_DIR / "reports"
 
 # Added tipo y fecha para clasificar original/devolución y particionar por día.
@@ -67,7 +76,7 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 
 def _baseline_exists() -> bool:
-    return BASELINE_PATH.exists() and BASELINE_PATH.is_file() and BASELINE_PATH.stat().st_size > 0
+    return BASELINE_XLSX_PATH.exists() and BASELINE_XLSX_PATH.is_file() and BASELINE_XLSX_PATH.stat().st_size > 0
 
 
 def _safe_float(value: str) -> float:
@@ -94,7 +103,7 @@ def _load_baseline_schema() -> Dict[str, Any]:
         return {"available": False}
 
     try:
-        wb = load_workbook(BASELINE_PATH, read_only=True, data_only=True)
+        wb = load_workbook(BASELINE_XLSX_PATH, read_only=True, data_only=True)
         sheets = []
         for name in wb.sheetnames:
             ws = wb[name]
@@ -109,6 +118,58 @@ def _load_baseline_schema() -> Dict[str, Any]:
         return {"available": True, "sheets": sheets}
     except Exception:
         return {"available": True, "sheets": []}
+
+
+def _baseline_pdf_exists() -> bool:
+    return BASELINE_PDF_PATH.exists() and BASELINE_PDF_PATH.is_file() and BASELINE_PDF_PATH.stat().st_size > 0
+
+
+_ES_MONTH_ABBR = {
+    1: "Ene",
+    2: "Feb",
+    3: "Mar",
+    4: "Abr",
+    5: "May",
+    6: "Jun",
+    7: "Jul",
+    8: "Ago",
+    9: "Sep",
+    10: "Oct",
+    11: "Nov",
+    12: "Dic",
+}
+
+
+_ES_MONTH_NAME = {
+    1: "enero",
+    2: "febrero",
+    3: "marzo",
+    4: "abril",
+    5: "mayo",
+    6: "junio",
+    7: "julio",
+    8: "agosto",
+    9: "septiembre",
+    10: "octubre",
+    11: "noviembre",
+    12: "diciembre",
+}
+
+
+def _parse_iso_date(value: str) -> datetime | None:
+    try:
+        return datetime.strptime(value, "%Y-%m-%d")
+    except Exception:
+        return None
+
+
+def _format_currency(value: float) -> str:
+    return f"${value:,.2f}"
+
+
+def _format_day_es(dt: datetime) -> str:
+    # ex: 01-Dic
+    return f"{dt.day:02d}-{_ES_MONTH_ABBR.get(dt.month, str(dt.month))}"
 
 
 def _mock_result() -> Dict[str, Any]:
@@ -319,7 +380,7 @@ def _build_monthly_report_xlsx(year: int, month: int) -> bytes:
         by_tipo[tipo]["amount"] += amt
 
     if _baseline_exists():
-        wb = load_workbook(BASELINE_PATH)
+        wb = load_workbook(BASELINE_XLSX_PATH)
     else:
         wb = Workbook()
 
@@ -395,6 +456,235 @@ def _build_monthly_report_xlsx(year: int, month: int) -> bytes:
     return output.getvalue()
 
 
+def _build_monthly_report_pdf(year: int, month: int) -> bytes:
+    entries: List[Dict[str, Any]] = []
+    for f in _iter_month_csv_files(year, month):
+        entries.extend(_read_entries_from_csv(f))
+
+    # "Solo tickets reales": require at least one ticket id
+    real_entries = [
+        e
+        for e in entries
+        if str(e.get("ticket_devolucion", "")).strip() or str(e.get("ticket_factura", "")).strip()
+    ]
+
+    total_count = len(real_entries)
+    total_amount = sum(_safe_float(e.get("monto_devuelto", "")) for e in real_entries)
+
+    by_day: DefaultDict[str, Dict[str, float]] = defaultdict(lambda: {"count": 0, "amount": 0.0})
+    for e in real_entries:
+        fecha_raw = str(e.get("fecha_operacion", "")).strip()
+        dt = _parse_iso_date(fecha_raw)
+        key = _format_day_es(dt) if dt else (fecha_raw or "SIN_FECHA")
+        by_day[key]["count"] += 1
+        by_day[key]["amount"] += _safe_float(e.get("monto_devuelto", ""))
+
+    # Peaks
+    top_by_count = sorted(by_day.items(), key=lambda kv: (kv[1]["count"], kv[1]["amount"]), reverse=True)
+    top_by_amount = sorted(by_day.items(), key=lambda kv: kv[1]["amount"], reverse=True)
+
+    month_name = _ES_MONTH_NAME.get(month, str(month))
+
+    def _pretty_day_phrase(day_key: str) -> str:
+        # If day_key like 01-Dic and month is known, convert to "1 de diciembre"
+        m = re.match(r"^(\d{2})-([A-Za-z]{3})$", day_key)
+        if m:
+            d = int(m.group(1))
+            return f"{d} de {month_name}"
+        # fallback: ISO date -> day of month
+        dt = _parse_iso_date(day_key)
+        if dt:
+            return f"{dt.day} de {_ES_MONTH_NAME.get(dt.month, str(dt.month))}"
+        return day_key
+
+    peak_lines = []
+    if top_by_count:
+        for item in top_by_count[:2]:
+            day_key, stats = item
+            peak_lines.append(f"{_pretty_day_phrase(day_key)}: {int(stats['count'])} tickets.")
+
+    max_amount_line = None
+    if top_by_amount:
+        day_key, stats = top_by_amount[0]
+        max_amount_line = (
+            f"Día con mayor impacto económico: {_pretty_day_phrase(day_key)} "
+            f"(Monto: {_format_currency(float(stats['amount']))})."
+        )
+
+    # Hallazgos: refact + logística
+    refact_count = 0
+    refact_amount = 0.0
+    inv_cedi_count = 0
+    for e in real_entries:
+        motivo = str(e.get("motivo", "")).lower()
+        comentario = str(e.get("comentario", "")).lower()
+        amt = _safe_float(e.get("monto_devuelto", ""))
+        if "refact" in motivo or "refact" in comentario:
+            refact_count += 1
+            refact_amount += amt
+        if "cedi" in comentario or "inventario" in comentario:
+            inv_cedi_count += 1
+
+    # Top vendedores
+    by_vendor: DefaultDict[str, Dict[str, float]] = defaultdict(lambda: {"count": 0, "amount": 0.0})
+    for e in real_entries:
+        vendor = str(e.get("vendedor", "")).strip() or "(vacío)"
+        by_vendor[vendor]["count"] += 1
+        by_vendor[vendor]["amount"] += _safe_float(e.get("monto_devuelto", ""))
+    top_vendors = sorted(by_vendor.items(), key=lambda kv: kv[1]["amount"], reverse=True)[:5]
+
+    styles = getSampleStyleSheet()
+    h1 = styles["Heading1"]
+    h2 = styles["Heading2"]
+    body = styles["BodyText"]
+    body.spaceAfter = 8
+    body.leading = 14
+    bullet_style = ParagraphStyle(
+        "bullet",
+        parent=styles["BodyText"],
+        leftIndent=18,
+        leading=14,
+        spaceAfter=4,
+    )
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=letter,
+        leftMargin=0.8 * inch,
+        rightMargin=0.8 * inch,
+        topMargin=0.75 * inch,
+        bottomMargin=0.75 * inch,
+        title=f"Reporte {year:04d}-{month:02d}",
+    )
+
+    story: List[Any] = []
+
+    # 1) Resumen ejecutivo
+    story.append(Paragraph("1. RESUMEN EJECUTIVO", h1))
+    story.append(Spacer(1, 6))
+    story.append(Paragraph("Reporte de Devoluciones (Solo Tickets Reales)", body))
+    bullets = [
+        f"Total de Devoluciones procesadas: {total_count} tickets.",
+        f"Monto Total Acumulado: {_format_currency(total_amount)}.",
+        "Días con mayor volumen de transacciones:",
+    ]
+    story.append(ListFlowable([ListItem(Paragraph(x, bullet_style)) for x in bullets[:2]], bulletType="bullet"))
+    story.append(ListFlowable([ListItem(Paragraph(bullets[2], bullet_style))], bulletType="bullet"))
+    if peak_lines:
+        sub_style = ParagraphStyle(
+            "sub",
+            parent=styles["BodyText"],
+            leftIndent=34,
+            leading=14,
+            spaceAfter=2,
+        )
+        for line in peak_lines[:2]:
+            story.append(Paragraph(f"o {line}", sub_style))
+    if max_amount_line:
+        story.append(ListFlowable([ListItem(Paragraph(max_amount_line, bullet_style))], bulletType="bullet"))
+
+    story.append(Spacer(1, 10))
+
+    # 2) Volumen diario
+    story.append(Paragraph("2. ANÁLISIS DE VOLUMEN DIARIO", h1))
+    story.append(Spacer(1, 6))
+    story.append(Paragraph("Desglose de Tickets por Fecha", h2))
+    story.append(
+        Paragraph(
+            "Este conteo representa cuántas devoluciones (filas de tickets) ocurrieron cada día:",
+            body,
+        )
+    )
+
+    day_rows = [["Fecha", "Cantidad de Tickets", "Monto del Día"]]
+    for day_key, stats in sorted(by_day.items()):
+        day_rows.append([day_key, int(stats["count"]), _format_currency(float(stats["amount"]))])
+    tbl = Table(day_rows, colWidths=[1.2 * inch, 1.8 * inch, 2.0 * inch])
+    tbl.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F2F2F2")),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
+                ("ALIGN", (1, 1), (1, -1), "RIGHT"),
+                ("ALIGN", (2, 1), (2, -1), "RIGHT"),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#FAFAFA")]),
+            ]
+        )
+    )
+    story.append(tbl)
+    story.append(Spacer(1, 12))
+
+    # 3) Hallazgos clave
+    story.append(Paragraph("3. Hallazgos Clave", h1))
+    story.append(Spacer(1, 6))
+    hk = []
+    if top_by_count:
+        d1, s1 = top_by_count[0]
+        d2, s2 = (top_by_count[1] if len(top_by_count) > 1 else (None, None))
+        peaks_phrase = (
+            f"Picos Operativos: Los días {_pretty_day_phrase(d1)} y {_pretty_day_phrase(d2)} fueron los de mayor carga administrativa "
+            f"con {int(s1['count'])} tickets" + (f" y {int(s2['count'])} tickets" if s2 else "") + "."
+            if d2
+            else f"Picos Operativos: El día {_pretty_day_phrase(d1)} fue el de mayor carga administrativa con {int(s1['count'])} tickets."
+        )
+        if top_by_amount:
+            da, sa = top_by_amount[0]
+            peaks_phrase += (
+                f" El {_pretty_day_phrase(da)} registró el mayor monto del mes "
+                f"({_format_currency(float(sa['amount']))}), lo que sugiere devoluciones de mayor valor."
+            )
+        hk.append(peaks_phrase)
+
+    if refact_count > 0:
+        hk.append(
+            f"Eficiencia de Refacturación: Se identificaron {refact_count} registros con indicios de refacturación "
+            f"(monto asociado: {_format_currency(refact_amount)}). Conviene validar si existe recompra en el mismo movimiento o posterior."
+        )
+    else:
+        hk.append(
+            "Eficiencia de Refacturación: No se detectaron referencias claras a refacturación en motivo/comentario; "
+            "si este proceso aplica, conviene estandarizar cómo se registra en el ticket para poder medirlo."
+        )
+
+    if inv_cedi_count > 0:
+        hk.append(
+            f"Problema Logístico: {inv_cedi_count} comentarios mencionan inventario/CEDI, lo que sugiere impacto directo de abastecimiento en la experiencia del cliente."
+        )
+    else:
+        hk.append(
+            "Problema Logístico: No se detectaron menciones frecuentes de inventario/CEDI en comentarios; "
+            "si es un problema recurrente, conviene capturarlo con un motivo estandarizado."
+        )
+
+    story.append(ListFlowable([ListItem(Paragraph(x, bullet_style)) for x in hk], bulletType='bullet'))
+    story.append(Spacer(1, 12))
+
+    # 4) Top vendedores
+    story.append(Paragraph("4. Top 5 Vendedores por Monto de Devolución", h1))
+    story.append(Spacer(1, 6))
+    story.append(
+        Paragraph(
+            "Identificar a los vendedores con mayores montos ayuda a detectar necesidades de capacitación en el proceso de venta o facturación.",
+            body,
+        )
+    )
+    vendor_lines = []
+    for i, (vendor, stats) in enumerate(top_vendors, start=1):
+        vendor_lines.append(
+            Paragraph(
+                f"{i}. {vendor}: {_format_currency(float(stats['amount']))} ({int(stats['count'])} tickets)",
+                body,
+            )
+        )
+    story.extend(vendor_lines if vendor_lines else [Paragraph("Sin datos suficientes.", body)])
+
+    doc.build(story)
+    return buf.getvalue()
+
+
 @app.post("/upload")
 async def upload(files: List[UploadFile] = File(...)):
     results = []
@@ -406,24 +696,41 @@ async def upload(files: List[UploadFile] = File(...)):
 
 @app.post("/baseline")
 async def baseline(file: UploadFile = File(...)):
-    if not file.filename.lower().endswith((".xlsx", ".xls")):
-        raise HTTPException(status_code=400, detail="Solo se aceptan archivos Excel (.xlsx, .xls)")
+    name = (file.filename or "").lower()
+    if not name.endswith((".xlsx", ".xls", ".pdf")):
+        raise HTTPException(status_code=400, detail="Solo se aceptan archivos .xlsx, .xls o .pdf")
     content = await file.read()
-    BASELINE_PATH.write_bytes(content)
-    return {"status": "baseline guardada", "file": BASELINE_PATH.name}
+    if name.endswith((".xlsx", ".xls")):
+        BASELINE_XLSX_PATH.write_bytes(content)
+        return {"status": "baseline guardada", "file": BASELINE_XLSX_PATH.name}
+    BASELINE_PDF_PATH.write_bytes(content)
+    return {"status": "baseline guardada", "file": BASELINE_PDF_PATH.name}
 
 
 @app.get("/baseline/status")
 async def baseline_status():
-    if not _baseline_exists():
-        return {"available": False}
-    st = BASELINE_PATH.stat()
-    return {
-        "available": True,
-        "file": BASELINE_PATH.name,
-        "bytes": st.st_size,
-        "modified": int(st.st_mtime),
+    xlsx_ok = _baseline_exists()
+    pdf_ok = _baseline_pdf_exists()
+    payload: Dict[str, Any] = {
+        "available": bool(xlsx_ok or pdf_ok),
+        "xlsx": None,
+        "pdf": None,
     }
+    if xlsx_ok:
+        st = BASELINE_XLSX_PATH.stat()
+        payload["xlsx"] = {
+            "file": BASELINE_XLSX_PATH.name,
+            "bytes": st.st_size,
+            "modified": int(st.st_mtime),
+        }
+    if pdf_ok:
+        st = BASELINE_PDF_PATH.stat()
+        payload["pdf"] = {
+            "file": BASELINE_PDF_PATH.name,
+            "bytes": st.st_size,
+            "modified": int(st.st_mtime),
+        }
+    return payload
 
 
 @app.get("/baseline/schema")
@@ -440,6 +747,19 @@ async def report_monthly(year: int, month: int):
     return StreamingResponse(
         io.BytesIO(content),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.get("/report/monthly/pdf")
+async def report_monthly_pdf(year: int, month: int):
+    if month < 1 or month > 12:
+        raise HTTPException(status_code=400, detail="month debe ser 1-12")
+    content = _build_monthly_report_pdf(year, month)
+    filename = f"reporte_{year:04d}_{month:02d}.pdf"
+    return StreamingResponse(
+        io.BytesIO(content),
+        media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
