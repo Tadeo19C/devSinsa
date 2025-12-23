@@ -72,7 +72,17 @@ class EntriesPayload(BaseModel):
     entries: List[Dict[str, Any]]
 
 
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
+
+class ChatPayload(BaseModel):
+    messages: List[ChatMessage]
+
+
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GROQ_CHAT_MODEL = os.getenv("GROQ_CHAT_MODEL", "llama-3.1-8b-instant")
 
 
 def _baseline_exists() -> bool:
@@ -248,6 +258,27 @@ def extract_data_from_image_bytes(image_bytes: bytes, filename: str) -> Dict[str
     except Exception:
         # Fallback to mock on any failure
         return _mock_result()
+
+
+def _call_groq_chat(messages: List[Dict[str, Any]]) -> str:
+    if not GROQ_API_KEY:
+        return "No hay GROQ_API_KEY configurada. (Respuesta mock)"
+
+    resp = requests.post(
+        "https://api.groq.com/openai/v1/chat/completions",
+        headers={
+            "Authorization": f"Bearer {GROQ_API_KEY}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": GROQ_CHAT_MODEL,
+            "temperature": 0.2,
+            "messages": messages,
+        },
+        timeout=30,
+    )
+    resp.raise_for_status()
+    return resp.json()["choices"][0]["message"]["content"]
 
 
 def get_csv_path(fecha: str) -> Path:
@@ -768,3 +799,33 @@ async def report_monthly_pdf(year: int, month: int):
 async def save(payload: EntriesPayload):
     files = append_entries(payload.entries)
     return {"status": "guardado", "files": files}
+
+
+@app.post("/chat")
+async def chat(payload: ChatPayload):
+    # Minimal chat endpoint for optional UI widget.
+    incoming = payload.messages or []
+
+    baseline_schema = _load_baseline_schema()
+    baseline_note = ""
+    if baseline_schema.get("available"):
+        sheet_names = [s.get("name") for s in baseline_schema.get("sheets", []) if s.get("name")]
+        if sheet_names:
+            baseline_note = f"\nBaseline cargado (pestañas): {sheet_names}."
+
+    system = (
+        "Eres un asistente para el sistema de recuento diario de facturas/devoluciones. "
+        "Responde en español, de forma breve y accionable. "
+        "Si te preguntan por pasos, da instrucciones concretas."
+        + baseline_note
+    )
+
+    # Keep only last N user/assistant messages to control prompt size.
+    trimmed = incoming[-20:]
+    messages = [{"role": "system", "content": system}] + [m.model_dump() for m in trimmed]
+
+    try:
+        answer = _call_groq_chat(messages)
+        return {"reply": answer}
+    except Exception:
+        return {"reply": "No pude generar respuesta en este momento. Intenta de nuevo."}

@@ -34,6 +34,12 @@ function App() {
   const [baselineStatus, setBaselineStatus] = useState('')
   const [reportMonth, setReportMonth] = useState(new Date().toISOString().slice(0, 7))
   const [reporting, setReporting] = useState(false)
+  const [chatOpen, setChatOpen] = useState(false)
+  const [chatMessages, setChatMessages] = useState([
+    { role: 'assistant', content: 'Hola. ¿En qué te ayudo con el reporte o la carga de facturas?' },
+  ])
+  const [chatInput, setChatInput] = useState('')
+  const [chatting, setChatting] = useState(false)
 
   const apiBase = useMemo(
     () => import.meta.env.VITE_API_BASE || 'http://localhost:8000',
@@ -102,6 +108,34 @@ function App() {
       setError(err.message || 'Error al descargar reporte')
     } finally {
       setReporting(false)
+    }
+  }
+
+  const sendChat = async () => {
+    const text = chatInput.trim()
+    if (!text || chatting) return
+    setChatInput('')
+    setChatting(true)
+    setError('')
+
+    const nextMessages = [...chatMessages, { role: 'user', content: text }]
+    setChatMessages(nextMessages)
+
+    try {
+      const response = await fetch(`${apiBase}/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages: nextMessages }),
+      })
+      if (!response.ok) throw new Error('Error en el chat')
+      const data = await response.json()
+      const reply = data?.reply || 'Sin respuesta'
+      setChatMessages((prev) => [...prev, { role: 'assistant', content: reply }])
+    } catch (err) {
+      setError(err.message || 'Error en el chat')
+      setChatMessages((prev) => [...prev, { role: 'assistant', content: 'No pude responder en este momento.' }])
+    } finally {
+      setChatting(false)
     }
   }
 
@@ -391,6 +425,72 @@ function App() {
             {error || status}
           </div>
         )}
+      </div>
+
+      {/* Chat widget (optional) */}
+      <div className="fixed bottom-5 right-5 z-50">
+        {chatOpen && (
+          <div className="mb-3 w-[340px] max-w-[90vw] rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 shadow-lg overflow-hidden">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100 dark:border-slate-700/80">
+              <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">Chat IA</div>
+              <button
+                type="button"
+                onClick={() => setChatOpen(false)}
+                className="text-xs rounded-md border border-slate-200 dark:border-slate-600 px-2 py-1 text-slate-700 dark:text-slate-100 hover:bg-slate-50 dark:hover:bg-slate-700"
+              >
+                Cerrar
+              </button>
+            </div>
+
+            <div className="max-h-[320px] overflow-auto px-4 py-3 space-y-2">
+              {chatMessages.map((m, i) => (
+                <div
+                  key={i}
+                  className={
+                    m.role === 'user'
+                      ? 'ml-auto w-fit max-w-[85%] rounded-xl bg-indigo-600 text-white px-3 py-2 text-sm'
+                      : 'mr-auto w-fit max-w-[85%] rounded-xl bg-slate-100 dark:bg-slate-700 text-slate-900 dark:text-slate-100 px-3 py-2 text-sm'
+                  }
+                >
+                  {m.content}
+                </div>
+              ))}
+            </div>
+
+            <div className="px-4 py-3 border-t border-slate-100 dark:border-slate-700/80">
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault()
+                  sendChat()
+                }}
+                className="flex gap-2"
+              >
+                <input
+                  type="text"
+                  value={chatInput}
+                  onChange={(e) => setChatInput(e.target.value)}
+                  placeholder="Escribe tu pregunta..."
+                  className="flex-1 rounded-md border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none"
+                />
+                <button
+                  type="submit"
+                  disabled={chatting}
+                  className="rounded-lg bg-indigo-600 px-3 py-2 text-sm font-semibold text-white shadow hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {chatting ? '…' : 'Enviar'}
+                </button>
+              </form>
+            </div>
+          </div>
+        )}
+
+        <button
+          type="button"
+          onClick={() => setChatOpen((v) => !v)}
+          className="rounded-full bg-indigo-600 text-white shadow-lg hover:bg-indigo-500 px-4 py-3 text-sm font-semibold"
+        >
+          {chatOpen ? 'Chat' : 'Chat'}
+        </button>
       </div>
     </div>
   )
