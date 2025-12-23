@@ -30,11 +30,80 @@ function App() {
   const [status, setStatus] = useState('')
   const [error, setError] = useState('')
   const [isDragging, setIsDragging] = useState(false)
+  const [isDark, setIsDark] = useState(false)
+  const [baselineStatus, setBaselineStatus] = useState('')
+  const [reportMonth, setReportMonth] = useState(new Date().toISOString().slice(0, 7))
+  const [reporting, setReporting] = useState(false)
 
   const apiBase = useMemo(
     () => import.meta.env.VITE_API_BASE || 'http://localhost:8000',
     [],
   )
+
+  const toggleTheme = () => {
+    setIsDark((prev) => {
+      const next = !prev
+      if (next) {
+        document.documentElement.classList.add('dark')
+      } else {
+        document.documentElement.classList.remove('dark')
+      }
+      return next
+    })
+  }
+
+  const uploadBaseline = async (file) => {
+    if (!file) return
+    setBaselineStatus('')
+    setError('')
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
+      const response = await fetch(`${apiBase}/baseline`, {
+        method: 'POST',
+        body: formData,
+      })
+      if (!response.ok) throw new Error('Error al subir baseline Excel')
+      const data = await response.json()
+      setBaselineStatus(`Baseline cargada: ${data?.file || file.name}`)
+    } catch (err) {
+      setError(err.message || 'Error al subir baseline')
+    }
+  }
+
+  const downloadMonthlyReport = async () => {
+    if (!reportMonth) return
+    const [yearStr, monthStr] = reportMonth.split('-')
+    const year = Number(yearStr)
+    const month = Number(monthStr)
+    if (!year || !month) return
+
+    setReporting(true)
+    setStatus('')
+    setError('')
+    try {
+      const response = await fetch(`${apiBase}/report/monthly?year=${year}&month=${month}`, {
+        method: 'GET',
+      })
+      if (!response.ok) throw new Error('Error al generar reporte')
+
+      const blob = await response.blob()
+      const url = window.URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `reporte_${year}_${String(month).padStart(2, '0')}.xlsx`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      window.URL.revokeObjectURL(url)
+
+      setStatus('Reporte descargado')
+    } catch (err) {
+      setError(err.message || 'Error al descargar reporte')
+    } finally {
+      setReporting(false)
+    }
+  }
 
   const handleDrop = useCallback(async (event) => {
     event.preventDefault()
@@ -118,13 +187,22 @@ function App() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900">
+    <div className={`min-h-screen ${isDark ? 'bg-slate-900 text-slate-100' : 'bg-slate-50 text-slate-900'}`}>
       <div className="mx-auto max-w-6xl px-6 py-10 space-y-8">
         <header className="flex flex-col gap-2">
-          <h1 className="text-3xl font-semibold text-slate-900">
+          <div className="flex items-center justify-between">
+            <h1 className="text-3xl font-semibold">
             Recuento diario de facturas
-          </h1>
-          <p className="text-slate-600">
+            </h1>
+            <button
+              type="button"
+              onClick={toggleTheme}
+              className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium bg-white/70 dark:bg-slate-800/70 dark:border-slate-600 shadow"
+            >
+              {isDark ? 'Modo claro' : 'Modo oscuro'}
+            </button>
+          </div>
+          <p className="text-slate-600 dark:text-slate-300">
             Sube imágenes o PDFs, revisa los campos y confirma para guardar.
           </p>
         </header>
@@ -137,7 +215,7 @@ function App() {
             }}
             onDragLeave={() => setIsDragging(false)}
             onDrop={handleDrop}
-            className={`relative flex flex-col items-center justify-center rounded-2xl border-2 border-dashed ${isDragging ? 'border-indigo-500 bg-indigo-50' : 'border-slate-300 bg-white'} px-6 py-10 text-center shadow-sm transition`}
+            className={`relative flex flex-col items-center justify-center rounded-2xl border-2 border-dashed ${isDragging ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-900/30' : 'border-slate-300 bg-white dark:border-slate-600 dark:bg-slate-800'} px-6 py-10 text-center shadow-sm transition`}
           >
             <input
               id="file-input"
@@ -148,10 +226,10 @@ function App() {
               className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
             />
             <div className="space-y-2">
-              <p className="text-lg font-medium text-slate-900">
+              <p className="text-lg font-medium text-slate-900 dark:text-slate-100">
                 Arrastra y suelta aquí tus facturas
               </p>
-              <p className="text-sm text-slate-500">
+              <p className="text-sm text-slate-500 dark:text-slate-300">
                 Formatos: imágenes o PDF. Múltiples archivos permitidos.
               </p>
               <label
@@ -167,14 +245,64 @@ function App() {
           )}
         </section>
 
-        <section className="bg-white rounded-2xl shadow-sm border border-slate-200">
-          <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
-            <h2 className="text-lg font-semibold text-slate-900">Datos extraídos</h2>
+        <section className="bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700">
+          <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 dark:border-slate-700/80">
+            <div>
+              <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">Baseline Excel</h2>
+              <p className="text-sm text-slate-600 dark:text-slate-300">Sube tu archivo base (.xlsx/.xls) para guiar el esquema.</p>
+            </div>
+            <label className="inline-flex items-center justify-center rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow hover:bg-indigo-500 cursor-pointer">
+              Subir Excel
+              <input
+                type="file"
+                accept=".xlsx,.xls"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0]
+                  if (file) uploadBaseline(file)
+                  e.target.value = ''
+                }}
+              />
+            </label>
+          </div>
+          {baselineStatus && (
+            <div className="px-6 py-3 text-sm text-emerald-700 dark:text-emerald-200">{baselineStatus}</div>
+          )}
+        </section>
+
+        <section className="bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700">
+          <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 dark:border-slate-700/80">
+            <div>
+              <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">Reporte mensual</h2>
+              <p className="text-sm text-slate-600 dark:text-slate-300">Genera un Excel con resumen y detalle del mes.</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                type="month"
+                value={reportMonth}
+                onChange={(e) => setReportMonth(e.target.value)}
+                className="rounded-md border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 px-2 py-2 text-sm focus:border-indigo-500 focus:outline-none"
+              />
+              <button
+                type="button"
+                onClick={downloadMonthlyReport}
+                disabled={reporting}
+                className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {reporting ? 'Generando…' : 'Descargar'}
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <section className="bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700">
+          <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 dark:border-slate-700/80">
+            <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">Datos extraídos</h2>
             <div className="flex gap-2">
               <button
                 type="button"
                 onClick={addEmptyRow}
-                className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                className="rounded-lg border border-slate-200 dark:border-slate-600 px-3 py-2 text-sm font-medium text-slate-700 dark:text-slate-100 hover:bg-slate-50 dark:hover:bg-slate-700"
               >
                 Añadir fila
               </button>
@@ -191,7 +319,7 @@ function App() {
 
           <div className="overflow-x-auto">
             <table className="min-w-full text-sm text-left">
-              <thead className="bg-slate-50 text-slate-700 uppercase text-xs">
+              <thead className="bg-slate-50 dark:bg-slate-700 text-slate-700 dark:text-slate-100 uppercase text-xs">
                 <tr>
                   {columns.map((col) => (
                     <th key={col.key} className="px-4 py-3 font-semibold">
@@ -205,7 +333,7 @@ function App() {
                   <tr>
                     <td
                       colSpan={columns.length}
-                      className="px-4 py-6 text-center text-slate-500"
+                      className="px-4 py-6 text-center text-slate-500 dark:text-slate-300"
                     >
                       Sube archivos para iniciar o añade una fila manual.
                     </td>
@@ -214,7 +342,7 @@ function App() {
                   rows.map((row, idx) => (
                     <tr
                       key={idx}
-                      className={idx % 2 === 0 ? 'bg-white' : 'bg-slate-50'}
+                      className={idx % 2 === 0 ? 'bg-white dark:bg-slate-800' : 'bg-slate-50 dark:bg-slate-700/70'}
                     >
                       {columns.map((col) => (
                         <td key={col.key} className="px-4 py-2">
@@ -222,7 +350,7 @@ function App() {
                             <select
                               value={row[col.key] ?? 'devolucion'}
                               onChange={(e) => handleChange(idx, col.key, e.target.value)}
-                              className="w-full rounded-md border border-slate-200 px-2 py-2 text-sm focus:border-indigo-500 focus:outline-none"
+                              className="w-full rounded-md border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 px-2 py-2 text-sm focus:border-indigo-500 focus:outline-none"
                             >
                               <option value="devolucion">Devolución</option>
                               <option value="original">Original</option>
@@ -232,14 +360,14 @@ function App() {
                               type="date"
                               value={row[col.key] ?? ''}
                               onChange={(e) => handleChange(idx, col.key, e.target.value)}
-                              className="w-full rounded-md border border-slate-200 px-2 py-2 text-sm focus:border-indigo-500 focus:outline-none"
+                              className="w-full rounded-md border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 px-2 py-2 text-sm focus:border-indigo-500 focus:outline-none"
                             />
                           ) : (
                             <input
                               type="text"
                               value={row[col.key] ?? ''}
                               onChange={(e) => handleChange(idx, col.key, e.target.value)}
-                              className="w-full rounded-md border border-slate-200 px-2 py-2 text-sm focus:border-indigo-500 focus:outline-none"
+                              className="w-full rounded-md border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 px-2 py-2 text-sm focus:border-indigo-500 focus:outline-none"
                             />
                           )}
                         </td>
@@ -256,8 +384,8 @@ function App() {
           <div
             className={`rounded-xl border px-4 py-3 text-sm ${
               error
-                ? 'border-red-200 bg-red-50 text-red-700'
-                : 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                ? 'border-red-200 bg-red-50 text-red-700 dark:border-red-500/50 dark:bg-red-950 dark:text-red-100'
+                : 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/50 dark:bg-emerald-950 dark:text-emerald-100'
             }`}
           >
             {error || status}
